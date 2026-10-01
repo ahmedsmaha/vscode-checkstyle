@@ -1,8 +1,7 @@
-name: Sync Upstream Checkstyle Release
+name: Sync and Publish Upstream Release
 
 on:
   schedule:
-    # Check every 6 hours
     - cron: "0 */6 * * *"
 
   workflow_dispatch:
@@ -15,63 +14,64 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout fork
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/jdneo/vscode-checkstyle.git
           git fetch upstream --tags
 
-      - name: Find latest upstream release
-        id: upstream
+      - name: Get latest upstream release
+        id: release
         run: |
-          LATEST_TAG=$(git tag --sort=-version:refname | head -n 1)
+          LATEST_TAG=$(git tag \
+            --sort=-version:refname \
+            --list 'v*' \
+            | head -n 1)
 
-          echo "Latest upstream tag: $LATEST_TAG"
+          echo "Latest upstream release: $LATEST_TAG"
           echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Check if release already exists
-        id: check
+      - name: Check published version
+        id: current
         run: |
-          VERSION="${{ steps.upstream.outputs.tag }}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
 
-          if git rev-parse "$VERSION" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "Current version: $CURRENT_VERSION"
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: compare
+        env:
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          LATEST="${LATEST_TAG#v}"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            echo "Already running latest version: $LATEST"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "update=true" >> "$GITHUB_OUTPUT"
+            echo "New upstream version detected: $LATEST"
           fi
 
-      - name: Stop if no new release
-        if: steps.check.outputs.exists == 'true'
+      - name: Reset to upstream release
+        if: steps.compare.outputs.update == 'true'
         run: |
-          echo "No new upstream release."
-          exit 0
+          git checkout -B sync-upstream \
+            "${{ steps.release.outputs.tag }}"
 
-      - name: Checkout upstream release
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          git checkout -B upstream-release \
-            "${{ steps.upstream.outputs.tag }}"
-
-      - name: Install dependencies
-        if: steps.check.outputs.exists == 'false'
-        run: npm ci
-
-      - name: Run tests
-        if: steps.check.outputs.exists == 'false'
-        run: npm test
-
-      - name: Update publisher
-        if: steps.check.outputs.exists == 'false'
+      - name: Set our publisher
+        if: steps.compare.outputs.update == 'true'
         run: |
           node <<'EOF'
           const fs = require("fs");
@@ -89,21 +89,34 @@ jobs:
         env:
           PUBLISHER: ahmedsmaha
 
-      - name: Install Open VSX CLI
-        if: steps.check.outputs.exists == 'false'
+      - name: Install dependencies
+        if: steps.compare.outputs.update == 'true'
+        run: npm ci
+
+      - name: Test
+        if: steps.compare.outputs.update == 'true'
+        run: npm test
+
+      - name: Install ovsx
+        if: steps.compare.outputs.update == 'true'
         run: npm install --no-save ovsx
 
       - name: Publish to Open VSX
-        if: steps.check.outputs.exists == 'false'
+        if: steps.compare.outputs.update == 'true'
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           npx ovsx publish -p "$OVSX_PAT"
 
-      - name: Push synced release
-        if: steps.check.outputs.exists == 'false'
+      - name: Create Git tag
+        if: steps.compare.outputs.update == 'true'
         run: |
-          git add package.json
-          git commit -m "Sync upstream release ${{ steps.upstream.outputs.tag }}" || true
+          VERSION="${{ steps.release.outputs.tag }}"
 
-          git push origin upstream-release
+          git tag -f "$VERSION"
+          git push origin "$VERSION" --force
+
+      - name: Push synced branch
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          git push origin sync-upstream --force
