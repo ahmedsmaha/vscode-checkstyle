@@ -1,0 +1,109 @@
+name: Sync Upstream Checkstyle Release
+
+on:
+  schedule:
+    # Check every 6 hours
+    - cron: "0 */6 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream
+        run: |
+          git remote add upstream https://github.com/jdneo/vscode-checkstyle.git
+          git fetch upstream --tags
+
+      - name: Find latest upstream release
+        id: upstream
+        run: |
+          LATEST_TAG=$(git tag --sort=-version:refname | head -n 1)
+
+          echo "Latest upstream tag: $LATEST_TAG"
+          echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
+        id: check
+        run: |
+          VERSION="${{ steps.upstream.outputs.tag }}"
+
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop if no new release
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          echo "No new upstream release."
+          exit 0
+
+      - name: Checkout upstream release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git checkout -B upstream-release \
+            "${{ steps.upstream.outputs.tag }}"
+
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'false'
+        run: npm ci
+
+      - name: Run tests
+        if: steps.check.outputs.exists == 'false'
+        run: npm test
+
+      - name: Update publisher
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+
+          const file = "package.json";
+          const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+
+          pkg.publisher = process.env.PUBLISHER;
+
+          fs.writeFileSync(
+            file,
+            JSON.stringify(pkg, null, 2) + "\n"
+          );
+          EOF
+        env:
+          PUBLISHER: ahmedsmaha
+
+      - name: Install Open VSX CLI
+        if: steps.check.outputs.exists == 'false'
+        run: npm install --no-save ovsx
+
+      - name: Publish to Open VSX
+        if: steps.check.outputs.exists == 'false'
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          npx ovsx publish -p "$OVSX_PAT"
+
+      - name: Push synced release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git add package.json
+          git commit -m "Sync upstream release ${{ steps.upstream.outputs.tag }}" || true
+
+          git push origin upstream-release
