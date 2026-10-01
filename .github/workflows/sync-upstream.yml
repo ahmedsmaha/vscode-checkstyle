@@ -5,6 +5,12 @@ on:
     - cron: "0 */6 * * *"
 
   workflow_dispatch:
+    inputs:
+      force_publish:
+        description: "Publish the latest upstream release even if the version is unchanged"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -77,12 +83,14 @@ jobs:
         env:
           LATEST_TAG: ${{ steps.release.outputs.tag }}
           CURRENT_VERSION: ${{ steps.current.outputs.version }}
+          FORCE_PUBLISH: ${{ inputs.force_publish }}
         run: |
           node <<'EOF'
           const fs = require("fs");
 
           const latestTag = process.env.LATEST_TAG;
           const current = process.env.CURRENT_VERSION;
+          const forcePublish = process.env.FORCE_PUBLISH === "true";
 
           const latest = latestTag.replace(/^v/, "");
 
@@ -114,15 +122,20 @@ jobs:
 
           console.log(`Current version: ${current}`);
           console.log(`Upstream version: ${latest}`);
+          console.log(`Force publish: ${forcePublish}`);
 
-          if (compareVersions(latest, current) > 0) {
-            console.log("New upstream release detected.");
+          const isNewer = compareVersions(latest, current) > 0;
+
+          if (forcePublish || isNewer) {
+            console.log("Publishing release.");
+
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=true\n"
             );
           } else {
             console.log("No newer upstream release.");
+
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=false\n"
