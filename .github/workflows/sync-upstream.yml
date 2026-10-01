@@ -9,38 +9,58 @@ on:
 permissions:
   contents: write
 
+env:
+  UPSTREAM_REPO: jdneo/vscode-checkstyle
+  PUBLISHER: ahmedsmaha
+
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout our fork
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ------------------------------------------------------------
+      # Git configuration
+      # ------------------------------------------------------------
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch upstream
-        run: |
-          git remote add upstream https://github.com/jdneo/vscode-checkstyle.git
-          git fetch upstream --tags
-
+      # ------------------------------------------------------------
+      # Get latest upstream RELEASE
+      # We deliberately use GitHub Releases instead of guessing
+      # from git tags.
+      # ------------------------------------------------------------
       - name: Get latest upstream release
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          LATEST_TAG=$(git tag \
-            --sort=-version:refname \
-            --list 'v*' \
-            | head -n 1)
+          RELEASE_JSON=$(gh api "repos/${UPSTREAM_REPO}/releases/latest")
 
-          echo "Latest upstream release: $LATEST_TAG"
-          echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
 
-      - name: Check published version
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Could not determine latest upstream release."
+            exit 1
+          fi
+
+          echo "Latest upstream release: $TAG"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # Get our currently published version
+      # ------------------------------------------------------------
+      - name: Get current version
         id: current
         run: |
           CURRENT_VERSION=$(node -p "require('./package.json').version")
@@ -48,54 +68,112 @@ jobs:
           echo "Current version: $CURRENT_VERSION"
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
+      # ------------------------------------------------------------
+      # Compare versions
+      # No external semver package required.
+      # ------------------------------------------------------------
       - name: Compare versions
         id: compare
+        env:
+          LATEST_TAG: ${{ steps.release.outputs.tag }}
+          CURRENT_VERSION: ${{ steps.current.outputs.version }}
         run: |
           node <<'EOF'
-          const semver = require("semver");
           const fs = require("fs");
 
-          const pkg = JSON.parse(
-            fs.readFileSync("package.json", "utf8")
-          );
-
           const latestTag = process.env.LATEST_TAG;
+          const current = process.env.CURRENT_VERSION;
+
           const latest = latestTag.replace(/^v/, "");
 
-          const current = pkg.version;
+          function parseVersion(version) {
+            const match = version.match(/^(\d+)\.(\d+)\.(\d+)/);
 
-          console.log(`Current: ${current}`);
-          console.log(`Upstream: ${latest}`);
+            if (!match) {
+              throw new Error(`Invalid version: ${version}`);
+            }
 
-          if (semver.gt(latest, current)) {
+            return [
+              Number(match[1]),
+              Number(match[2]),
+              Number(match[3])
+            ];
+          }
+
+          function compareVersions(a, b) {
+            const av = parseVersion(a);
+            const bv = parseVersion(b);
+
+            for (let i = 0; i < 3; i++) {
+              if (av[i] > bv[i]) return 1;
+              if (av[i] < bv[i]) return -1;
+            }
+
+            return 0;
+          }
+
+          console.log(`Current version: ${current}`);
+          console.log(`Upstream version: ${latest}`);
+
+          if (compareVersions(latest, current) > 0) {
+            console.log("New upstream release detected.");
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=true\n"
             );
           } else {
+            console.log("No newer upstream release.");
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=false\n"
             );
           }
           EOF
-        env:
-          LATEST_TAG: ${{ steps.release.outputs.tag }}
 
+      # ------------------------------------------------------------
+      # Fetch upstream
+      # ------------------------------------------------------------
+      - name: Fetch upstream
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+
+          git fetch upstream \
+            --tags \
+            --force
+
+      # ------------------------------------------------------------
+      # Checkout EXACT upstream release
+      # ------------------------------------------------------------
       - name: Reset to upstream release
         if: steps.compare.outputs.update == 'true'
         run: |
-          git checkout -B sync-upstream \
-            "${{ steps.release.outputs.tag }}"
+          TAG="${{ steps.release.outputs.tag }}"
 
+          git checkout -B sync-upstream "$TAG"
+
+          echo "Checked out upstream release: $TAG"
+
+      # ------------------------------------------------------------
+      # Update publisher
+      # ------------------------------------------------------------
       - name: Set our publisher
         if: steps.compare.outputs.update == 'true'
+        env:
+          PUBLISHER: ${{ env.PUBLISHER }}
         run: |
           node <<'EOF'
           const fs = require("fs");
 
           const file = "package.json";
-          const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+
+          const pkg = JSON.parse(
+            fs.readFileSync(file, "utf8")
+          );
+
+          console.log(`Original publisher: ${pkg.publisher}`);
+          console.log(`New publisher: ${process.env.PUBLISHER}`);
 
           pkg.publisher = process.env.PUBLISHER;
 
@@ -104,37 +182,229 @@ jobs:
             JSON.stringify(pkg, null, 2) + "\n"
           );
           EOF
-        env:
-          PUBLISHER: ahmedsmaha
 
+      # ------------------------------------------------------------
+      # Verify package metadata
+      # ------------------------------------------------------------
+      - name: Verify package metadata
+        if: steps.compare.outputs.update == 'true'
+        env:
+          EXPECTED_VERSION: ${{ steps.release.outputs.tag }}
+        run: |
+          EXPECTED_VERSION="${EXPECTED_VERSION#v}"
+
+          ACTUAL_VERSION=$(node -p "require('./package.json').version")
+          ACTUAL_PUBLISHER=$(node -p "require('./package.json').publisher")
+
+          echo "Expected version: $EXPECTED_VERSION"
+          echo "Actual version:   $ACTUAL_VERSION"
+          echo "Publisher:        $ACTUAL_PUBLISHER"
+
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Version mismatch!"
+            exit 1
+          fi
+
+          if [ "$ACTUAL_PUBLISHER" != "$PUBLISHER" ]; then
+            echo "Publisher mismatch!"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # Setup Node
+      # ------------------------------------------------------------
+      - name: Setup Node.js
+        if: steps.compare.outputs.update == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # ------------------------------------------------------------
+      # Setup Java 21
+      # Current JDT LS requires Java 21.
+      # ------------------------------------------------------------
+      - name: Setup Java 21
+        if: steps.compare.outputs.update == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # ------------------------------------------------------------
+      # Setup Maven 3.9.12
+      # The upstream Maven wrapper is 3.5.0, which is too old
+      # for modern Tycho.
+      # ------------------------------------------------------------
+      - name: Setup Maven
+        if: steps.compare.outputs.update == 'true'
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: 3.9.12
+
+      # ------------------------------------------------------------
+      # Show build environment
+      # ------------------------------------------------------------
+      - name: Show build environment
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          echo "Node:"
+          node --version
+
+          echo "Java:"
+          java -version
+
+          echo "Maven:"
+          mvn --version
+
+      # ------------------------------------------------------------
+      # Install Node dependencies
+      # ------------------------------------------------------------
       - name: Install dependencies
         if: steps.compare.outputs.update == 'true'
         run: npm ci
 
-      - name: Test
+      # ------------------------------------------------------------
+      # Patch Tycho version
+      #
+      # Upstream currently uses Tycho 2.7.2.
+      # That version does not understand JavaSE-21.
+      #
+      # We use Tycho 5.0.3 for the build.
+      # ------------------------------------------------------------
+      - name: Update Tycho version
         if: steps.compare.outputs.update == 'true'
-        run: npm test
+        run: |
+          POM="jdtls.ext/pom.xml"
 
+          echo "Before:"
+          grep -n "tycho-version" "$POM"
+
+          sed -i \
+            's/<tycho-version>2\.7\.2<\/tycho-version>/<tycho-version>5.0.3<\/tycho-version>/' \
+            "$POM"
+
+          echo "After:"
+          grep -n "tycho-version" "$POM"
+
+      # ------------------------------------------------------------
+      # Build / lint
+      # ------------------------------------------------------------
+      - name: Lint
+        if: steps.compare.outputs.update == 'true'
+        run: npm run lint
+
+      # ------------------------------------------------------------
+      # Build Java plugin + TypeScript
+      #
+      # npm run build-plugin invokes:
+      #   ./mvnw clean verify
+      #
+      # We deliberately use system Maven by putting it first in PATH.
+      # ------------------------------------------------------------
+      - name: Build plugin
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          export PATH="$(dirname "$(command -v mvn)"):$PATH"
+
+          npm run build-plugin
+
+      # ------------------------------------------------------------
+      # Package VSIX
+      # ------------------------------------------------------------
+      - name: Package VSIX
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          npx @vscode/vsce@latest package
+
+      # ------------------------------------------------------------
+      # Find VSIX
+      # ------------------------------------------------------------
+      - name: Find VSIX
+        if: steps.compare.outputs.update == 'true'
+        id: vsix
+        run: |
+          VSIX_PATH=$(find . -maxdepth 1 -name "*.vsix" -type f | head -n 1)
+
+          if [ -z "$VSIX_PATH" ]; then
+            echo "VSIX was not generated."
+            exit 1
+          fi
+
+          echo "VSIX: $VSIX_PATH"
+
+          echo "path=$VSIX_PATH" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # Install Open VSX CLI
+      # ------------------------------------------------------------
       - name: Install ovsx
         if: steps.compare.outputs.update == 'true'
-        run: npm install --no-save ovsx
+        run: |
+          npm install --no-save ovsx
 
+      # ------------------------------------------------------------
+      # Publish to Open VSX
+      # ------------------------------------------------------------
       - name: Publish to Open VSX
         if: steps.compare.outputs.update == 'true'
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
-          npx ovsx publish -p "$OVSX_PAT"
+          if [ -z "$OVSX_PAT" ]; then
+            echo "OVSX_PAT secret is not configured."
+            exit 1
+          fi
 
-      - name: Create Git tag
+          npx ovsx publish \
+            "${{ steps.vsix.outputs.path }}" \
+            -p "$OVSX_PAT"
+
+      # ------------------------------------------------------------
+      # Commit synchronized source
+      # ------------------------------------------------------------
+      - name: Commit synced source
         if: steps.compare.outputs.update == 'true'
         run: |
-          VERSION="${{ steps.release.outputs.tag }}"
+          git add -A
 
-          git tag -f "$VERSION"
-          git push origin "$VERSION" --force
+          git commit \
+            -m "Sync upstream release ${{ steps.release.outputs.tag }}" \
+            || echo "Nothing to commit."
 
+      # ------------------------------------------------------------
+      # Push synchronized branch
+      # ------------------------------------------------------------
       - name: Push synced branch
         if: steps.compare.outputs.update == 'true'
         run: |
           git push origin sync-upstream --force
+
+      # ------------------------------------------------------------
+      # Create Git tag
+      # ------------------------------------------------------------
+      - name: Create Git tag
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          git tag -f "$TAG"
+          git push origin "$TAG" --force
+
+      # ------------------------------------------------------------
+      # Create GitHub Release
+      # ------------------------------------------------------------
+      - name: Create GitHub Release
+        if: steps.compare.outputs.update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists."
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes
+          fi
