@@ -24,27 +24,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------------------------------------------------------
+
+      # ============================================================
       # Checkout our fork
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------------
-      # Git configuration
-      # ------------------------------------------------------------
+      # ============================================================
+      # Configure Git
+      # ============================================================
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Get latest upstream RELEASE
-      # We deliberately use GitHub Releases instead of guessing
-      # from git tags.
-      # ------------------------------------------------------------
+      #
+      # Uses GitHub Releases API instead of guessing the latest
+      # release from git tags.
+      #
+      # /releases/latest does not return prereleases.
+      # ============================================================
+
       - name: Get latest upstream release
         id: release
         env:
@@ -52,32 +59,38 @@ jobs:
         run: |
           RELEASE_JSON=$(gh api "repos/${UPSTREAM_REPO}/releases/latest")
 
-          TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+          LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
 
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
             echo "Could not determine latest upstream release."
             exit 1
           fi
 
-          echo "Latest upstream release: $TAG"
+          echo "Latest upstream release: $LATEST_TAG"
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
-      # ------------------------------------------------------------
-      # Get our currently published version
-      # ------------------------------------------------------------
+      # ============================================================
+      # Get current version in our fork
+      # ============================================================
+
       - name: Get current version
         id: current
         run: |
           CURRENT_VERSION=$(node -p "require('./package.json').version")
 
           echo "Current version: $CURRENT_VERSION"
+
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Compare versions
-      # No external semver package required.
-      # ------------------------------------------------------------
+      #
+      # No external semver dependency.
+      #
+      # force_publish=true is useful for the first publication.
+      # ============================================================
+
       - name: Compare versions
         id: compare
         env:
@@ -120,14 +133,14 @@ jobs:
             return 0;
           }
 
-          console.log(`Current version: ${current}`);
+          console.log(`Current version:  ${current}`);
           console.log(`Upstream version: ${latest}`);
-          console.log(`Force publish: ${forcePublish}`);
+          console.log(`Force publish:    ${forcePublish}`);
 
           const isNewer = compareVersions(latest, current) > 0;
 
           if (forcePublish || isNewer) {
-            console.log("Publishing release.");
+            console.log("A publish is required.");
 
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
@@ -143,22 +156,26 @@ jobs:
           }
           EOF
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Fetch upstream
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Fetch upstream
         if: steps.compare.outputs.update == 'true'
         run: |
           git remote remove upstream 2>/dev/null || true
-          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+
+          git remote add upstream \
+            "https://github.com/${UPSTREAM_REPO}.git"
 
           git fetch upstream \
             --tags \
             --force
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Checkout EXACT upstream release
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Reset to upstream release
         if: steps.compare.outputs.update == 'true'
         run: |
@@ -168,9 +185,10 @@ jobs:
 
           echo "Checked out upstream release: $TAG"
 
-      # ------------------------------------------------------------
-      # Update publisher
-      # ------------------------------------------------------------
+      # ============================================================
+      # Set our publisher
+      # ============================================================
+
       - name: Set our publisher
         if: steps.compare.outputs.update == 'true'
         env:
@@ -186,7 +204,7 @@ jobs:
           );
 
           console.log(`Original publisher: ${pkg.publisher}`);
-          console.log(`New publisher: ${process.env.PUBLISHER}`);
+          console.log(`New publisher:      ${process.env.PUBLISHER}`);
 
           pkg.publisher = process.env.PUBLISHER;
 
@@ -196,36 +214,40 @@ jobs:
           );
           EOF
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Verify package metadata
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Verify package metadata
         if: steps.compare.outputs.update == 'true'
         env:
-          EXPECTED_VERSION: ${{ steps.release.outputs.tag }}
+          EXPECTED_TAG: ${{ steps.release.outputs.tag }}
+          EXPECTED_PUBLISHER: ${{ env.PUBLISHER }}
         run: |
-          EXPECTED_VERSION="${EXPECTED_VERSION#v}"
+          EXPECTED_VERSION="${EXPECTED_TAG#v}"
 
           ACTUAL_VERSION=$(node -p "require('./package.json').version")
           ACTUAL_PUBLISHER=$(node -p "require('./package.json').publisher")
 
-          echo "Expected version: $EXPECTED_VERSION"
-          echo "Actual version:   $ACTUAL_VERSION"
-          echo "Publisher:        $ACTUAL_PUBLISHER"
+          echo "Expected version:  $EXPECTED_VERSION"
+          echo "Actual version:    $ACTUAL_VERSION"
+          echo "Expected publisher: $EXPECTED_PUBLISHER"
+          echo "Actual publisher:   $ACTUAL_PUBLISHER"
 
           if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
             echo "Version mismatch!"
             exit 1
           fi
 
-          if [ "$ACTUAL_PUBLISHER" != "$PUBLISHER" ]; then
+          if [ "$ACTUAL_PUBLISHER" != "$EXPECTED_PUBLISHER" ]; then
             echo "Publisher mismatch!"
             exit 1
           fi
 
-      # ------------------------------------------------------------
-      # Setup Node
-      # ------------------------------------------------------------
+      # ============================================================
+      # Setup Node.js
+      # ============================================================
+
       - name: Setup Node.js
         if: steps.compare.outputs.update == 'true'
         uses: actions/setup-node@v4
@@ -233,9 +255,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Setup Java 21
-      # ------------------------------------------------------------
+      #
+      # Current JDT LS dependency requires Java 21.
+      # ============================================================
+
       - name: Setup Java 21
         if: steps.compare.outputs.update == 'true'
         uses: actions/setup-java@v4
@@ -243,17 +268,35 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # ------------------------------------------------------------
-      # Upgrade Maven Wrapper
+      # ============================================================
+      # Update Maven Wrapper
       #
-      # The upstream project uses Maven 3.5.0.
-      # build.js explicitly executes ./mvnw, so setup-maven
-      # cannot override it.
-      # ------------------------------------------------------------
+      # IMPORTANT:
+      #
+      # The project build does NOT use the system mvn command.
+      #
+      # scripts/build.js runs:
+      #
+      #   ./mvnw clean verify
+      #
+      # from jdtls.ext.
+      #
+      # Therefore setup-maven/PATH does not override Maven.
+      #
+      # The upstream wrapper currently points to Maven 3.5.0.
+      # Change it to Maven 3.9.12.
+      # ============================================================
+
       - name: Update Maven Wrapper
         if: steps.compare.outputs.update == 'true'
         run: |
           WRAPPER_FILE="jdtls.ext/.mvn/wrapper/maven-wrapper.properties"
+
+          if [ ! -f "$WRAPPER_FILE" ]; then
+            echo "Maven wrapper file not found:"
+            echo "$WRAPPER_FILE"
+            exit 1
+          fi
 
           echo "Maven wrapper before:"
           cat "$WRAPPER_FILE"
@@ -265,104 +308,161 @@ jobs:
           echo "Maven wrapper after:"
           cat "$WRAPPER_FILE"
 
-      # ------------------------------------------------------------
-      # Show Java/Maven configuration
-      # ------------------------------------------------------------
+          if ! grep -q "apache-maven/3.9.12/apache-maven-3.9.12-bin.zip" "$WRAPPER_FILE"; then
+            echo "Failed to update Maven wrapper."
+            exit 1
+          fi
+
+      # ============================================================
+      # Show build environment
+      # ============================================================
+
       - name: Show build environment
         if: steps.compare.outputs.update == 'true'
         run: |
-          echo "Node:"
+          echo "======================================"
+          echo "Node"
+          echo "======================================"
           node --version
 
-          echo "Java:"
+          echo ""
+          echo "======================================"
+          echo "Java"
+          echo "======================================"
           java -version
 
-          echo "System Maven:"
-          mvn --version || true
-
-          echo "Maven wrapper configuration:"
+          echo ""
+          echo "======================================"
+          echo "Maven wrapper configuration"
+          echo "======================================"
           cat jdtls.ext/.mvn/wrapper/maven-wrapper.properties
 
-      # ------------------------------------------------------------
-      # Install dependencies
-      # ------------------------------------------------------------
+      # ============================================================
+      # Install Node dependencies
+      # ============================================================
+
       - name: Install dependencies
         if: steps.compare.outputs.update == 'true'
-        run: npm ci
+        run: |
+          npm ci
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Update Tycho
-      # ------------------------------------------------------------
+      #
+      # Upstream release uses Tycho 2.7.2.
+      #
+      # Tycho 2.7.2 cannot resolve JavaSE-21.
+      #
+      # Use Tycho 5.0.3 for this build.
+      # ============================================================
+
       - name: Update Tycho version
         if: steps.compare.outputs.update == 'true'
         run: |
           POM="jdtls.ext/pom.xml"
 
+          if [ ! -f "$POM" ]; then
+            echo "POM not found:"
+            echo "$POM"
+            exit 1
+          fi
+
           echo "Tycho version before:"
-          grep -n "tycho-version" "$POM"
+          grep -n "tycho-version" "$POM" || true
 
           sed -i \
             's/<tycho-version>2\.7\.2<\/tycho-version>/<tycho-version>5.0.3<\/tycho-version>/' \
             "$POM"
 
+          echo ""
           echo "Tycho version after:"
-          grep -n "tycho-version" "$POM"
+          grep -n "tycho-version" "$POM" || true
 
-      # ------------------------------------------------------------
+          if ! grep -q "<tycho-version>5.0.3</tycho-version>" "$POM"; then
+            echo "Failed to update Tycho version."
+            exit 1
+          fi
+
+      # ============================================================
       # Lint
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Lint
         if: steps.compare.outputs.update == 'true'
-        run: npm run lint
+        run: |
+          npm run lint
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Build plugin
       #
-      # scripts/build.js executes ./mvnw.
+      # scripts/build.js runs:
+      #
+      #   ./mvnw clean verify
+      #
+      # with cwd = jdtls.ext.
+      #
       # The wrapper now downloads Maven 3.9.12.
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Build plugin
         if: steps.compare.outputs.update == 'true'
         run: |
           npm run build-plugin
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Package VSIX
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Package VSIX
         if: steps.compare.outputs.update == 'true'
         run: |
           npx @vscode/vsce@latest package
 
-      # ------------------------------------------------------------
-      # Find VSIX
-      # ------------------------------------------------------------
+      # ============================================================
+      # Find generated VSIX
+      # ============================================================
+
       - name: Find VSIX
         if: steps.compare.outputs.update == 'true'
         id: vsix
         run: |
-          VSIX_PATH=$(find . -maxdepth 1 -name "*.vsix" -type f | head -n 1)
+          VSIX_PATH=$(find . \
+            -maxdepth 1 \
+            -name "*.vsix" \
+            -type f \
+            | head -n 1)
 
           if [ -z "$VSIX_PATH" ]; then
             echo "VSIX was not generated."
             exit 1
           fi
 
-          echo "VSIX: $VSIX_PATH"
+          echo "Generated VSIX:"
+          echo "$VSIX_PATH"
 
           echo "path=$VSIX_PATH" >> "$GITHUB_OUTPUT"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Install Open VSX CLI
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Install ovsx
         if: steps.compare.outputs.update == 'true'
         run: |
           npm install --no-save ovsx
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Publish to Open VSX
-      # ------------------------------------------------------------
+      #
+      # Required GitHub secret:
+      #
+      #   OVSX_PAT
+      #
+      # The Open VSX namespace must be:
+      #
+      #   ahmedsmaha
+      # ============================================================
+
       - name: Publish to Open VSX
         if: steps.compare.outputs.update == 'true'
         env:
@@ -373,13 +473,17 @@ jobs:
             exit 1
           fi
 
+          echo "Publishing:"
+          echo "${{ steps.vsix.outputs.path }}"
+
           npx ovsx publish \
             "${{ steps.vsix.outputs.path }}" \
             -p "$OVSX_PAT"
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Commit synchronized source
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Commit synced source
         if: steps.compare.outputs.update == 'true'
         run: |
@@ -389,28 +493,33 @@ jobs:
             -m "Sync upstream release ${{ steps.release.outputs.tag }}" \
             || echo "Nothing to commit."
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Push synchronized branch
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Push synced branch
         if: steps.compare.outputs.update == 'true'
         run: |
           git push origin sync-upstream --force
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Create Git tag
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Create Git tag
         if: steps.compare.outputs.update == 'true'
         run: |
           TAG="${{ steps.release.outputs.tag }}"
 
+          echo "Creating tag: $TAG"
+
           git tag -f "$TAG"
           git push origin "$TAG" --force
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Create GitHub Release
-      # ------------------------------------------------------------
+      # ============================================================
+
       - name: Create GitHub Release
         if: steps.compare.outputs.update == 'true'
         env:
