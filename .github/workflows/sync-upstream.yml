@@ -243,7 +243,7 @@ jobs:
         if: steps.compare.outputs.update == 'true'
         run: |
           sed -i \
-            's#https://download.eclipse.org/jdtls/snapshots/repository/latest/#https://download.eclipse.org/jdtls/milestones/1.24.0/#' \
+            's#https://download.eclipse.org/jdtls/snapshots/repository/latest/#https://download.eclipse.org/jdtls/milestones/1.24.0/repository#' \
             jdtls.ext/com.shengchen.checkstyle.target/target.target
 
           echo "JDT LS repository:"
