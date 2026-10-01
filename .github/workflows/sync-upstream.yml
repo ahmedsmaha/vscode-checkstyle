@@ -254,10 +254,16 @@ jobs:
         run: |
           npm run build-plugin
 
+      - name: Setup Node.js 22 for VSIX packaging
+        if: steps.compare.outputs.update == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Package VSIX
         if: steps.compare.outputs.update == 'true'
         run: |
-          npx vsce@latest package
+          npx @vscode/vsce package
 
       - name: Find VSIX
         if: steps.compare.outputs.update == 'true'
