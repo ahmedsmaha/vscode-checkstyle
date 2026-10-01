@@ -239,6 +239,16 @@ jobs:
         run: |
           npm run lint
 
+      - name: Pin JDT LS
+        if: steps.compare.outputs.update == 'true'
+        run: |
+          sed -i \
+            's#https://download.eclipse.org/jdtls/snapshots/repository/latest/#https://download.eclipse.org/jdtls/milestones/1.24.0/#' \
+            jdtls.ext/com.shengchen.checkstyle.target/target.target
+
+          echo "JDT LS repository:"
+          grep "jdtls" jdtls.ext/com.shengchen.checkstyle.target/target.target
+
       - name: Build plugin
         if: steps.compare.outputs.update == 'true'
         run: |
