@@ -24,33 +24,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ============================================================
-      # Checkout our fork
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ============================================================
-      # Configure Git
-      # ============================================================
-
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      # ============================================================
-      # Get latest upstream RELEASE
-      #
-      # Uses GitHub Releases API instead of guessing the latest
-      # release from git tags.
-      #
-      # /releases/latest does not return prereleases.
-      # ============================================================
 
       - name: Get latest upstream release
         id: release
@@ -58,7 +40,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           RELEASE_JSON=$(gh api "repos/${UPSTREAM_REPO}/releases/latest")
-
           LATEST_TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
 
           if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
@@ -67,12 +48,7 @@ jobs:
           fi
 
           echo "Latest upstream release: $LATEST_TAG"
-
           echo "tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # Get current version in our fork
-      # ============================================================
 
       - name: Get current version
         id: current
@@ -80,16 +56,7 @@ jobs:
           CURRENT_VERSION=$(node -p "require('./package.json').version")
 
           echo "Current version: $CURRENT_VERSION"
-
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # Compare versions
-      #
-      # No external semver dependency.
-      #
-      # force_publish=true is useful for the first publication.
-      # ============================================================
 
       - name: Compare versions
         id: compare
@@ -141,14 +108,12 @@ jobs:
 
           if (forcePublish || isNewer) {
             console.log("A publish is required.");
-
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=true\n"
             );
           } else {
             console.log("No newer upstream release.");
-
             fs.appendFileSync(
               process.env.GITHUB_OUTPUT,
               "update=false\n"
@@ -156,25 +121,13 @@ jobs:
           }
           EOF
 
-      # ============================================================
-      # Fetch upstream
-      # ============================================================
-
       - name: Fetch upstream
         if: steps.compare.outputs.update == 'true'
         run: |
           git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
 
-          git remote add upstream \
-            "https://github.com/${UPSTREAM_REPO}.git"
-
-          git fetch upstream \
-            --tags \
-            --force
-
-      # ============================================================
-      # Checkout EXACT upstream release
-      # ============================================================
+          git fetch upstream --tags --force
 
       - name: Reset to upstream release
         if: steps.compare.outputs.update == 'true'
@@ -184,10 +137,6 @@ jobs:
           git checkout -B sync-upstream "$TAG"
 
           echo "Checked out upstream release: $TAG"
-
-      # ============================================================
-      # Set our publisher
-      # ============================================================
 
       - name: Set our publisher
         if: steps.compare.outputs.update == 'true'
@@ -214,10 +163,6 @@ jobs:
           );
           EOF
 
-      # ============================================================
-      # Verify package metadata
-      # ============================================================
-
       - name: Verify package metadata
         if: steps.compare.outputs.update == 'true'
         env:
@@ -229,8 +174,8 @@ jobs:
           ACTUAL_VERSION=$(node -p "require('./package.json').version")
           ACTUAL_PUBLISHER=$(node -p "require('./package.json').publisher")
 
-          echo "Expected version:  $EXPECTED_VERSION"
-          echo "Actual version:    $ACTUAL_VERSION"
+          echo "Expected version:   $EXPECTED_VERSION"
+          echo "Actual version:     $ACTUAL_VERSION"
           echo "Expected publisher: $EXPECTED_PUBLISHER"
           echo "Actual publisher:   $ACTUAL_PUBLISHER"
 
@@ -244,78 +189,19 @@ jobs:
             exit 1
           fi
 
-      # ============================================================
-      # Setup Node.js
-      # ============================================================
-
       - name: Setup Node.js
         if: steps.compare.outputs.update == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 18
           cache: npm
 
-      # ============================================================
-      # Setup Java 21
-      #
-      # Current JDT LS dependency requires Java 21.
-      # ============================================================
-
-      - name: Setup Java 21
+      - name: Setup Java 17
         if: steps.compare.outputs.update == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "21"
-
-      # ============================================================
-      # Update Maven Wrapper
-      #
-      # IMPORTANT:
-      #
-      # The project build does NOT use the system mvn command.
-      #
-      # scripts/build.js runs:
-      #
-      #   ./mvnw clean verify
-      #
-      # from jdtls.ext.
-      #
-      # Therefore setup-maven/PATH does not override Maven.
-      #
-      # The upstream wrapper currently points to Maven 3.5.0.
-      # Change it to Maven 3.9.12.
-      # ============================================================
-
-      - name: Update Maven Wrapper
-        if: steps.compare.outputs.update == 'true'
-        run: |
-          WRAPPER_FILE="jdtls.ext/.mvn/wrapper/maven-wrapper.properties"
-
-          if [ ! -f "$WRAPPER_FILE" ]; then
-            echo "Maven wrapper file not found:"
-            echo "$WRAPPER_FILE"
-            exit 1
-          fi
-
-          echo "Maven wrapper before:"
-          cat "$WRAPPER_FILE"
-
-          sed -i \
-            's#apache-maven/3\.5\.0/apache-maven-3\.5\.0-bin\.zip#apache-maven/3.9.12/apache-maven-3.9.12-bin.zip#g' \
-            "$WRAPPER_FILE"
-
-          echo "Maven wrapper after:"
-          cat "$WRAPPER_FILE"
-
-          if ! grep -q "apache-maven/3.9.12/apache-maven-3.9.12-bin.zip" "$WRAPPER_FILE"; then
-            echo "Failed to update Maven wrapper."
-            exit 1
-          fi
-
-      # ============================================================
-      # Show build environment
-      # ============================================================
+          java-version: "17"
 
       - name: Show build environment
         if: steps.compare.outputs.update == 'true'
@@ -333,145 +219,41 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "Maven wrapper configuration"
+          echo "Maven wrapper"
           echo "======================================"
           cat jdtls.ext/.mvn/wrapper/maven-wrapper.properties
 
-      # ============================================================
-      # Install Node dependencies
-      # ============================================================
+          echo ""
+          echo "======================================"
+          echo "Tycho version"
+          echo "======================================"
+          grep "tycho-version" jdtls.ext/pom.xml
 
       - name: Install dependencies
         if: steps.compare.outputs.update == 'true'
         run: |
           npm ci
 
-      # ============================================================
-      # Update Tycho + Java execution environment
-      #
-      # The upstream 1.4.2 project uses Tycho 2.7.2 and does not
-      # explicitly define an execution environment.
-      #
-      # Tycho 2.7.2 cannot resolve JavaSE-21.
-      #
-      # The current JDT LS dependency requires Java 21, while the
-      # Eclipse 4.27 target contains dependencies requiring Java 11.
-      #
-      # We therefore:
-      #
-      #   1. Use Tycho 5.0.3
-      #   2. Tell Tycho to resolve against JavaSE-21
-      #
-      # Java 21 satisfies both Java 11 and Java 21 requirements.
-      # ============================================================
-
-      - name: Update Tycho configuration
-        if: steps.compare.outputs.update == 'true'
-        run: |
-          POM="jdtls.ext/pom.xml"
-
-          if [ ! -f "$POM" ]; then
-            echo "POM not found:"
-            echo "$POM"
-            exit 1
-          fi
-
-          echo "=== Tycho configuration BEFORE ==="
-          grep -n -A35 -B5 "target-platform-configuration" "$POM" || true
-
-          # Update Tycho.
-          sed -i \
-            's/<tycho-version>2\.7\.2<\/tycho-version>/<tycho-version>5.0.3<\/tycho-version>/' \
-            "$POM"
-
-          # Add explicit Java 21 execution environment.
-          #
-          # The upstream POM has:
-          #
-          # <configuration>
-          #     <resolver>p2</resolver>
-          #     <target>
-          #
-          # Insert executionEnvironment immediately after
-          # <resolver>p2</resolver>.
-          sed -i \
-            '/<resolver>p2<\/resolver>/a\
-                            <executionEnvironment>JavaSE-21</executionEnvironment>' \
-            "$POM"
-
-          echo ""
-          echo "=== Tycho configuration AFTER ==="
-          grep -n -A35 -B5 "target-platform-configuration" "$POM" || true
-
-          echo ""
-          echo "=== Verification ==="
-
-          grep -q \
-            '<tycho-version>5.0.3</tycho-version>' \
-            "$POM" \
-            || {
-              echo "ERROR: Tycho version was not updated."
-              exit 1
-            }
-
-          grep -q \
-            '<executionEnvironment>JavaSE-21</executionEnvironment>' \
-            "$POM" \
-            || {
-              echo "ERROR: JavaSE-21 execution environment was not added."
-              exit 1
-            }
-
-          echo "Tycho configuration verified."
-
-      # ============================================================
-      # Lint
-      # ============================================================
-
       - name: Lint
         if: steps.compare.outputs.update == 'true'
         run: |
           npm run lint
-
-      # ============================================================
-      # Build plugin
-      #
-      # scripts/build.js runs:
-      #
-      #   ./mvnw clean verify
-      #
-      # with cwd = jdtls.ext.
-      #
-      # The wrapper now downloads Maven 3.9.12.
-      # ============================================================
 
       - name: Build plugin
         if: steps.compare.outputs.update == 'true'
         run: |
           npm run build-plugin
 
-      # ============================================================
-      # Package VSIX
-      # ============================================================
-
       - name: Package VSIX
         if: steps.compare.outputs.update == 'true'
         run: |
-          npx @vscode/vsce@latest package
-
-      # ============================================================
-      # Find generated VSIX
-      # ============================================================
+          npx vsce@latest package
 
       - name: Find VSIX
         if: steps.compare.outputs.update == 'true'
         id: vsix
         run: |
-          VSIX_PATH=$(find . \
-            -maxdepth 1 \
-            -name "*.vsix" \
-            -type f \
-            | head -n 1)
+          VSIX_PATH=$(find . -maxdepth 1 -name "*.vsix" -type f | head -n 1)
 
           if [ -z "$VSIX_PATH" ]; then
             echo "VSIX was not generated."
@@ -483,26 +265,10 @@ jobs:
 
           echo "path=$VSIX_PATH" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # Install Open VSX CLI
-      # ============================================================
-
       - name: Install ovsx
         if: steps.compare.outputs.update == 'true'
         run: |
           npm install --no-save ovsx
-
-      # ============================================================
-      # Publish to Open VSX
-      #
-      # Required GitHub secret:
-      #
-      #   OVSX_PAT
-      #
-      # The Open VSX namespace must be:
-      #
-      #   ahmedsmaha
-      # ============================================================
 
       - name: Publish to Open VSX
         if: steps.compare.outputs.update == 'true'
@@ -521,10 +287,6 @@ jobs:
             "${{ steps.vsix.outputs.path }}" \
             -p "$OVSX_PAT"
 
-      # ============================================================
-      # Commit synchronized source
-      # ============================================================
-
       - name: Commit synced source
         if: steps.compare.outputs.update == 'true'
         run: |
@@ -534,18 +296,10 @@ jobs:
             -m "Sync upstream release ${{ steps.release.outputs.tag }}" \
             || echo "Nothing to commit."
 
-      # ============================================================
-      # Push synchronized branch
-      # ============================================================
-
       - name: Push synced branch
         if: steps.compare.outputs.update == 'true'
         run: |
           git push origin sync-upstream --force
-
-      # ============================================================
-      # Create Git tag
-      # ============================================================
 
       - name: Create Git tag
         if: steps.compare.outputs.update == 'true'
@@ -556,10 +310,6 @@ jobs:
 
           git tag -f "$TAG"
           git push origin "$TAG" --force
-
-      # ============================================================
-      # Create GitHub Release
-      # ============================================================
 
       - name: Create GitHub Release
         if: steps.compare.outputs.update == 'true'
