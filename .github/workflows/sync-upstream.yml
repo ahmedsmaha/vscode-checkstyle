@@ -347,16 +347,25 @@ jobs:
           npm ci
 
       # ============================================================
-      # Update Tycho
+      # Update Tycho + Java execution environment
       #
-      # Upstream release uses Tycho 2.7.2.
+      # The upstream 1.4.2 project uses Tycho 2.7.2 and does not
+      # explicitly define an execution environment.
       #
       # Tycho 2.7.2 cannot resolve JavaSE-21.
       #
-      # Use Tycho 5.0.3 for this build.
+      # The current JDT LS dependency requires Java 21, while the
+      # Eclipse 4.27 target contains dependencies requiring Java 11.
+      #
+      # We therefore:
+      #
+      #   1. Use Tycho 5.0.3
+      #   2. Tell Tycho to resolve against JavaSE-21
+      #
+      # Java 21 satisfies both Java 11 and Java 21 requirements.
       # ============================================================
 
-      - name: Update Tycho version
+      - name: Update Tycho configuration
         if: steps.compare.outputs.update == 'true'
         run: |
           POM="jdtls.ext/pom.xml"
@@ -367,21 +376,53 @@ jobs:
             exit 1
           fi
 
-          echo "Tycho version before:"
-          grep -n "tycho-version" "$POM" || true
+          echo "=== Tycho configuration BEFORE ==="
+          grep -n -A35 -B5 "target-platform-configuration" "$POM" || true
 
+          # Update Tycho.
           sed -i \
             's/<tycho-version>2\.7\.2<\/tycho-version>/<tycho-version>5.0.3<\/tycho-version>/' \
             "$POM"
 
-          echo ""
-          echo "Tycho version after:"
-          grep -n "tycho-version" "$POM" || true
+          # Add explicit Java 21 execution environment.
+          #
+          # The upstream POM has:
+          #
+          # <configuration>
+          #     <resolver>p2</resolver>
+          #     <target>
+          #
+          # Insert executionEnvironment immediately after
+          # <resolver>p2</resolver>.
+          sed -i \
+            '/<resolver>p2<\/resolver>/a\
+                            <executionEnvironment>JavaSE-21</executionEnvironment>' \
+            "$POM"
 
-          if ! grep -q "<tycho-version>5.0.3</tycho-version>" "$POM"; then
-            echo "Failed to update Tycho version."
-            exit 1
-          fi
+          echo ""
+          echo "=== Tycho configuration AFTER ==="
+          grep -n -A35 -B5 "target-platform-configuration" "$POM" || true
+
+          echo ""
+          echo "=== Verification ==="
+
+          grep -q \
+            '<tycho-version>5.0.3</tycho-version>' \
+            "$POM" \
+            || {
+              echo "ERROR: Tycho version was not updated."
+              exit 1
+            }
+
+          grep -q \
+            '<executionEnvironment>JavaSE-21</executionEnvironment>' \
+            "$POM" \
+            || {
+              echo "ERROR: JavaSE-21 execution environment was not added."
+              exit 1
+            }
+
+          echo "Tycho configuration verified."
 
       # ============================================================
       # Lint
