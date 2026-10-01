@@ -235,7 +235,6 @@ jobs:
 
       # ------------------------------------------------------------
       # Setup Java 21
-      # Current JDT LS requires Java 21.
       # ------------------------------------------------------------
       - name: Setup Java 21
         if: steps.compare.outputs.update == 'true'
@@ -245,18 +244,29 @@ jobs:
           java-version: "21"
 
       # ------------------------------------------------------------
-      # Setup Maven 3.9.12
-      # The upstream Maven wrapper is 3.5.0, which is too old
-      # for modern Tycho.
+      # Upgrade Maven Wrapper
+      #
+      # The upstream project uses Maven 3.5.0.
+      # build.js explicitly executes ./mvnw, so setup-maven
+      # cannot override it.
       # ------------------------------------------------------------
-      - name: Setup Maven
+      - name: Update Maven Wrapper
         if: steps.compare.outputs.update == 'true'
-        uses: stCarolas/setup-maven@v5
-        with:
-          maven-version: 3.9.12
+        run: |
+          WRAPPER_FILE="jdtls.ext/.mvn/wrapper/maven-wrapper.properties"
+
+          echo "Maven wrapper before:"
+          cat "$WRAPPER_FILE"
+
+          sed -i \
+            's#apache-maven/3\.5\.0/apache-maven-3\.5\.0-bin\.zip#apache-maven/3.9.12/apache-maven-3.9.12-bin.zip#g' \
+            "$WRAPPER_FILE"
+
+          echo "Maven wrapper after:"
+          cat "$WRAPPER_FILE"
 
       # ------------------------------------------------------------
-      # Show build environment
+      # Show Java/Maven configuration
       # ------------------------------------------------------------
       - name: Show build environment
         if: steps.compare.outputs.update == 'true'
@@ -267,59 +277,53 @@ jobs:
           echo "Java:"
           java -version
 
-          echo "Maven:"
-          mvn --version
+          echo "System Maven:"
+          mvn --version || true
+
+          echo "Maven wrapper configuration:"
+          cat jdtls.ext/.mvn/wrapper/maven-wrapper.properties
 
       # ------------------------------------------------------------
-      # Install Node dependencies
+      # Install dependencies
       # ------------------------------------------------------------
       - name: Install dependencies
         if: steps.compare.outputs.update == 'true'
         run: npm ci
 
       # ------------------------------------------------------------
-      # Patch Tycho version
-      #
-      # Upstream currently uses Tycho 2.7.2.
-      # That version does not understand JavaSE-21.
-      #
-      # We use Tycho 5.0.3 for the build.
+      # Update Tycho
       # ------------------------------------------------------------
       - name: Update Tycho version
         if: steps.compare.outputs.update == 'true'
         run: |
           POM="jdtls.ext/pom.xml"
 
-          echo "Before:"
+          echo "Tycho version before:"
           grep -n "tycho-version" "$POM"
 
           sed -i \
             's/<tycho-version>2\.7\.2<\/tycho-version>/<tycho-version>5.0.3<\/tycho-version>/' \
             "$POM"
 
-          echo "After:"
+          echo "Tycho version after:"
           grep -n "tycho-version" "$POM"
 
       # ------------------------------------------------------------
-      # Build / lint
+      # Lint
       # ------------------------------------------------------------
       - name: Lint
         if: steps.compare.outputs.update == 'true'
         run: npm run lint
 
       # ------------------------------------------------------------
-      # Build Java plugin + TypeScript
+      # Build plugin
       #
-      # npm run build-plugin invokes:
-      #   ./mvnw clean verify
-      #
-      # We deliberately use system Maven by putting it first in PATH.
+      # scripts/build.js executes ./mvnw.
+      # The wrapper now downloads Maven 3.9.12.
       # ------------------------------------------------------------
       - name: Build plugin
         if: steps.compare.outputs.update == 'true'
         run: |
-          export PATH="$(dirname "$(command -v mvn)"):$PATH"
-
           npm run build-plugin
 
       # ------------------------------------------------------------
