@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 env:
   UPSTREAM_REPO: jdneo/vscode-checkstyle
@@ -135,9 +134,23 @@ jobs:
         run: |
           TAG="${{ steps.release.outputs.tag }}"
 
+          mkdir -p /tmp/my-workflows
+
+          if [ -d .github/workflows ]; then
+            cp -R .github/workflows/. /tmp/my-workflows/
+          fi
+
           git checkout -B sync-upstream "$TAG"
 
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+
+          if [ -d /tmp/my-workflows ]; then
+            cp -R /tmp/my-workflows/. .github/workflows/
+          fi
+
           echo "Checked out upstream release: $TAG"
+          echo "Preserved fork workflows."
 
       - name: Set our publisher
         if: steps.compare.outputs.update == 'true'
