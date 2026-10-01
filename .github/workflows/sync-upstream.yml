@@ -315,7 +315,11 @@ jobs:
 
           npx ovsx publish \
             "${{ steps.vsix.outputs.path }}" \
-            -p "$OVSX_PAT"
+            -p "$OVSX_PAT" \
+            || {
+              echo "Version may already be published."
+              echo "Continuing..."
+            }
 
       - name: Commit synced source
         if: steps.compare.outputs.update == 'true'
