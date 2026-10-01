@@ -50,19 +50,37 @@ jobs:
 
       - name: Compare versions
         id: compare
-        env:
-          CURRENT: ${{ steps.current.outputs.version }}
-          LATEST_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          LATEST="${LATEST_TAG#v}"
+          node <<'EOF'
+          const semver = require("semver");
+          const fs = require("fs");
 
-          if [ "$CURRENT" = "$LATEST" ]; then
-            echo "update=false" >> "$GITHUB_OUTPUT"
-            echo "Already running latest version: $LATEST"
-          else
-            echo "update=true" >> "$GITHUB_OUTPUT"
-            echo "New upstream version detected: $LATEST"
-          fi
+          const pkg = JSON.parse(
+            fs.readFileSync("package.json", "utf8")
+          );
+
+          const latestTag = process.env.LATEST_TAG;
+          const latest = latestTag.replace(/^v/, "");
+
+          const current = pkg.version;
+
+          console.log(`Current: ${current}`);
+          console.log(`Upstream: ${latest}`);
+
+          if (semver.gt(latest, current)) {
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              "update=true\n"
+            );
+          } else {
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              "update=false\n"
+            );
+          }
+          EOF
+        env:
+          LATEST_TAG: ${{ steps.release.outputs.tag }}
 
       - name: Reset to upstream release
         if: steps.compare.outputs.update == 'true'
